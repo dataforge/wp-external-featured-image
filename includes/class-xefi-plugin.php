@@ -1090,7 +1090,6 @@ class Plugin {
         }
 
         ?>
-        ?>
         <div class="wrap">
             <h1><?php esc_html_e( 'WP External Featured Image', 'wp-external-featured-image' ); ?></h1>
             <form action="options.php" method="post">
