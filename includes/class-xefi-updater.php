@@ -23,6 +23,17 @@ class Updater {
         add_action( 'admin_post_xefi_check_updates', [ __CLASS__, 'handle_check_updates' ] );
     }
 
+    public static function is_update_available(): bool {
+        $release = self::fetch_latest_release();
+        if ( ! $release || empty( $release->tag_name ) ) {
+            return false;
+        }
+
+        $remote_version = (string) preg_replace( '/^v/', '', (string) $release->tag_name );
+
+        return version_compare( XEFI_PLUGIN_VERSION, $remote_version, '<' );
+    }
+
     public static function get_check_updates_url(): string {
         return wp_nonce_url(
             admin_url( 'admin-post.php?action=xefi_check_updates' ),

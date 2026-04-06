@@ -1090,6 +1090,7 @@ class Plugin {
         }
 
         ?>
+        ?>
         <div class="wrap">
             <h1><?php esc_html_e( 'WP External Featured Image', 'wp-external-featured-image' ); ?></h1>
             <form action="options.php" method="post">
@@ -1099,6 +1100,27 @@ class Plugin {
                 submit_button();
                 ?>
             </form>
+
+            <div class="card" style="margin-top:2em;">
+                <h2><?php esc_html_e( 'Plugin Updates', 'wp-external-featured-image' ); ?></h2>
+                <p>
+                    <?php esc_html_e( 'Current version:', 'wp-external-featured-image' ); ?>
+                    <strong>v<?php echo esc_html( XEFI_PLUGIN_VERSION ); ?></strong>
+                    <?php if ( isset( $_GET['update_check'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+                        <?php if ( Updater::is_update_available() ) : ?>
+                            &mdash; <span style="color:#b32d2e;"><?php esc_html_e( 'Update available!', 'wp-external-featured-image' ); ?></span>
+                            <a href="<?php echo esc_url( admin_url( 'update-core.php' ) ); ?>"><?php esc_html_e( 'Go to Updates', 'wp-external-featured-image' ); ?></a>
+                        <?php else : ?>
+                            &mdash; <span style="color:#00a32a;"><?php esc_html_e( 'Up to date', 'wp-external-featured-image' ); ?></span>
+                        <?php endif; ?>
+                    <?php endif; ?>
+                </p>
+                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline;">
+                    <input type="hidden" name="action" value="xefi_check_updates" />
+                    <?php wp_nonce_field( 'xefi_check_updates' ); ?>
+                    <button type="submit" class="button"><?php esc_html_e( 'Check for Updates', 'wp-external-featured-image' ); ?></button>
+                </form>
+            </div>
         </div>
         <?php
     }
