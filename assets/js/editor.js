@@ -21,9 +21,23 @@
     const settingsUrl = ensureString( data.settings && data.settings.settingsUrl );
 
     const isHttps = ( value ) => /^https:\/\//i.test( value );
-    const imageExtensions = validation.imageExtensions || [ 'jpg', 'jpeg', 'png' ];
-    const imageRegex = new RegExp( `\.(${ imageExtensions.join( '|' ) })($|[?&#])`, 'i' );
-    const isDirectImage = ( value ) => imageRegex.test( value );
+    const imageExtensions = validation.imageExtensions || [ 'jpg', 'jpeg', 'png', 'webp', 'avif' ];
+    const imageExtRegex = new RegExp( `\\.(${ imageExtensions.join( '|' ) })$`, 'i' );
+    const anyExtRegex = /\.[a-z0-9]+$/i;
+    const isDirectImage = ( value ) => {
+        try {
+            // Match PHP server-side check: accept known image extensions, or paths
+            // with no extension (CDN/image-proxy URLs like /image?id=123). Reject
+            // paths whose extension is something else, e.g. "foo.jpg.exe".
+            const pathname = new URL( value ).pathname;
+            if ( imageExtRegex.test( pathname ) ) {
+                return true;
+            }
+            return ! anyExtRegex.test( pathname );
+        } catch ( e ) {
+            return false;
+        }
+    };
     const isFlickrUrl = ( value ) => /^https:\/\/(?:www\.)?flickr\.com\/photos\/[^/]+\/\d+(?:\/|$)/i.test( value );
 
     const Panel = () => {
@@ -77,7 +91,6 @@
         }, [ url, supportsFlickr ] );
 
         useEffect( () => {
-            console.log( 'XEFI useEffect triggered', { url, resolvedUrl, validationMessage, supportsFlickr, previewUrl } );
             let controller = null;
             let timeoutId = null;
             let active = true;
@@ -90,7 +103,6 @@
             setRemoteError( '' );
 
             if ( validationMessage ) {
-                console.log( 'XEFI: validation message present', validationMessage );
                 setPreviewUrl( '' );
                 setIsResolving( false );
                 return () => {
@@ -99,7 +111,6 @@
             }
 
             if ( url && isDirectImage( url ) && isHttps( url ) ) {
-                console.log( 'XEFI: direct image detected', url );
                 if ( previewUrl !== url ) {
                     setPreviewUrl( url );
                 }
@@ -117,9 +128,7 @@
             }
 
             if ( url && isFlickrUrl( url ) ) {
-                console.log( 'XEFI: Flickr URL detected', { url, resolvedUrl, supportsFlickr, apiFetch: !! apiFetch, previewUrl } );
                 if ( resolvedUrl ) {
-                    console.log( 'XEFI: using cached resolved URL', resolvedUrl );
                     if ( previewUrl !== resolvedUrl ) {
                         setPreviewUrl( resolvedUrl );
                     }
@@ -130,7 +139,6 @@
                 }
 
                 if ( ! supportsFlickr || ! apiFetch ) {
-                    console.log( 'XEFI: Flickr not supported or apiFetch missing' );
                     setPreviewUrl( '' );
                     setIsResolving( false );
                     return () => {
@@ -138,15 +146,6 @@
                     };
                 }
 
-                if ( previewUrl ) {
-                    console.log( 'XEFI: previewUrl already set, skipping fetch' );
-                    setIsResolving( false );
-                    return () => {
-                        active = false;
-                    };
-                }
-
-                console.log( 'XEFI: fetching from API' );
                 controller = new AbortController();
                 requestRef.current = controller;
                 setIsResolving( true );
@@ -223,11 +222,9 @@
             return () => {
                 active = false;
             };
-        }, [ url, resolvedUrl, validationMessage, supportsFlickr, postId, error, photoId, previewUrl ] );
+        }, [ url, resolvedUrl, validationMessage, supportsFlickr, postId, error, photoId ] );
 
         const combinedError = validationMessage || remoteError || error;
-
-        console.log( 'XEFI render', { previewUrl, isResolving, combinedError } );
 
         const children = [];
 
@@ -306,7 +303,6 @@
         }
 
         if ( previewUrl ) {
-            console.log( 'XEFI: Adding image to children', previewUrl );
             children.push(
                 createElement(
                     'div',

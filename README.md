@@ -20,7 +20,8 @@ WP External Featured Image lets editors use remote images as if they were native
 
 1. Edit a post and open the **Featured Image Source** panel in the document settings sidebar.
 2. Select **External** and paste either:
-   - A direct HTTPS image URL that ends in `.jpg`, `.jpeg`, or `.png`, or
+   - A direct HTTPS image URL ending in `.jpg`, `.jpeg`, `.png`, `.webp`, or `.avif`, or
+   - A direct HTTPS URL with no file extension (CDN/image-proxy URLs such as `https://cdn.example.com/image?id=123`), or
    - A Flickr photo page URL (e.g. `https://www.flickr.com/photos/user/1234567890/`).
 3. Save or update the post. The plugin resolves Flickr URLs to the best available image size (preferring ≥1200px landscape when possible) and caches the result.
 4. On the front end, the external image is output wherever the theme requests the featured image. If you set a native featured image from the Media Library, it automatically overrides the external URL.
@@ -32,10 +33,16 @@ When enabled, the plugin also injects Open Graph and Twitter Card tags for exter
 - `xefi_should_override_thumbnail( $allow, $post_id )` — Return `false` to prevent external thumbnails for a post.
 - `xefi_resolve_flickr_sizes( $url, $sizes, $context )` — Override the selected Flickr size URL.
 - `xefi_thumbnail_img_attrs( $attrs, $post_id )` — Modify attributes on the generated `<img>` tag.
+- `xefi_thumbnail_sizes_attr( $sizes, $post_id, $size )` — Override the `sizes` attribute used with the Flickr `srcset`.
 - `xefi_og_enabled( $enabled, $post_id )` — Disable Open Graph/Twitter tag output.
 - `xefi_og_site_name( $site_name )` — Modify the generated `og:site_name` value.
 - `xefi_fb_app_id( $app_id )` — Filter the Facebook App ID used in Open Graph tags.
 - `xefi_cache_ttl( $seconds, $photo_id )` — Adjust Flickr cache duration globally.
+
+## Limitations
+
+- Flickr short URLs (`https://flic.kr/p/...`) are not supported — paste the full `https://www.flickr.com/photos/<user>/<id>/` URL instead.
+- Extensionless image URLs (e.g. `https://cdn.example.com/image?id=123`) are accepted; sites that prefer to reject them can return `false` from the `xefi_allow_extensionless_image_urls` filter.
 
 ## Requirements
 

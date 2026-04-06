@@ -28,11 +28,11 @@ class Flickr_Resolver {
      * Get singleton instance.
      */
     public static function instance(): Flickr_Resolver {
-        if ( null === static::$instance ) {
-            static::$instance = new static();
+        if ( null === self::$instance ) {
+            self::$instance = new self();
         }
 
-        return static::$instance;
+        return self::$instance;
     }
 
     /**
@@ -77,17 +77,20 @@ class Flickr_Resolver {
             $cache_ttl = DAY_IN_SECONDS;
         }
 
-        $cache_key = 'xefi_flickr_' . md5( $photo_id . '|' . $preference );
+        $api_key = $settings['flickr_api_key'] ?? '';
+        // The 8-char API key fingerprint busts the cache when the key is rotated;
+        // old transients simply expire on their own TTL.
+        $cache_key = 'xefi_flickr_' . md5( $photo_id . '|' . $preference . '|' . substr( wp_hash( $api_key ), 0, 8 ) );
         $cached    = get_transient( $cache_key );
-        if ( $cached ) {
+        if ( is_array( $cached ) && isset( $cached['url'] ) ) {
             return [
-                'url'      => $cached,
+                'url'      => $cached['url'],
+                'sizes'    => isset( $cached['sizes'] ) && is_array( $cached['sizes'] ) ? $cached['sizes'] : [],
                 'photo_id' => $photo_id,
                 'from'     => 'cache',
             ];
         }
 
-        $api_key = $settings['flickr_api_key'] ?? '';
         if ( empty( $api_key ) ) {
             return new WP_Error( 'xefi_missing_api_key', __( 'Flickr API key is not configured.', 'wp-external-featured-image' ) );
         }
@@ -114,6 +117,7 @@ class Flickr_Resolver {
 
         $code = wp_remote_retrieve_response_code( $response );
         if ( 200 !== $code ) {
+            /* translators: %d: HTTP response code returned by Flickr */
             return new WP_Error( 'xefi_flickr_http_error', sprintf( __( 'Unexpected Flickr response code: %d', 'wp-external-featured-image' ), $code ) );
         }
 
@@ -141,6 +145,10 @@ class Flickr_Resolver {
         /**
          * Allow overriding the resolved Flickr image URL.
          *
+         * Note: if a filter returns a URL that is not present in $sizes, the
+         * cached slim_sizes table will not contain it, and pick_size_for() will
+         * not be able to honor WP image-size keywords for that override.
+         *
          * @param string $url     The selected URL.
          * @param array  $sizes   Array of Flickr size data.
          * @param array  $context Contextual data including photo_id and preference.
@@ -151,13 +159,76 @@ class Flickr_Resolver {
             return new WP_Error( 'xefi_no_suitable_size', __( 'Flickr size selection was overridden to an empty value.', 'wp-external-featured-image' ) );
         }
 
-        set_transient( $cache_key, $url, $cache_ttl );
+        $slim_sizes = [];
+        foreach ( $sizes as $size ) {
+            if ( empty( $size['source'] ) ) {
+                continue;
+            }
+            if ( ! isset( $size['media'] ) || 'photo' !== $size['media'] ) {
+                continue;
+            }
+            $slim_sizes[] = [
+                'label'  => isset( $size['label'] ) ? (string) $size['label'] : '',
+                'width'  => (int) ( $size['width'] ?? 0 ),
+                'height' => (int) ( $size['height'] ?? 0 ),
+                'source' => (string) $size['source'],
+            ];
+        }
+
+        set_transient( $cache_key, [ 'url' => $url, 'sizes' => $slim_sizes ], $cache_ttl );
 
         return [
             'url'      => $url,
+            'sizes'    => $slim_sizes,
             'photo_id' => $photo_id,
             'from'     => 'api',
         ];
+    }
+
+    /**
+     * Pick the best stored size for a requested WP image size keyword.
+     *
+     * @param array        $sizes    Slim sizes array (label/width/height/source).
+     * @param string|int[] $wp_size  WP size keyword or [w,h].
+     * @return string|null
+     */
+    public function pick_size_for( array $sizes, $wp_size ): ?string {
+        if ( empty( $sizes ) ) {
+            return null;
+        }
+
+        $target_w = 0;
+        if ( is_array( $wp_size ) ) {
+            $target_w = (int) ( $wp_size[0] ?? 0 );
+        } else {
+            switch ( (string) $wp_size ) {
+                case 'thumbnail':    $target_w = 150;  break;
+                case 'medium':       $target_w = 300;  break;
+                case 'medium_large': $target_w = 768;  break;
+                case 'large':        $target_w = 1024; break;
+                case 'full':
+                default:             $target_w = 0;    break;
+            }
+        }
+
+        if ( $target_w <= 0 ) {
+            // Want the largest.
+            usort( $sizes, static function ( $a, $b ) { return (int) $b['width'] <=> (int) $a['width']; } );
+            return $sizes[0]['source'] ?? null;
+        }
+
+        // Smallest size with width >= target; otherwise the largest available.
+        $eligible = array_filter( $sizes, static function ( $s ) use ( $target_w ) {
+            return (int) $s['width'] >= $target_w;
+        } );
+
+        if ( ! empty( $eligible ) ) {
+            usort( $eligible, static function ( $a, $b ) { return (int) $a['width'] <=> (int) $b['width']; } );
+            return $eligible[0]['source'];
+        }
+
+        usort( $sizes, static function ( $a, $b ) { return (int) $b['width'] <=> (int) $a['width']; } );
+        return $sizes[0]['source'] ?? null;
     }
 
     /**
@@ -168,9 +239,20 @@ class Flickr_Resolver {
      * @return string|null
      */
     protected function choose_best_size( array $sizes, string $preference ): ?string {
+        $candidates = array_filter(
+            $sizes,
+            static function ( $size ) {
+                if ( ! isset( $size['media'] ) || 'photo' !== $size['media'] ) {
+                    return false;
+                }
+
+                return ! empty( $size['source'] );
+            }
+        );
+
         if ( 'largest_available' === $preference ) {
             usort(
-                $sizes,
+                $candidates,
                 static function ( $a, $b ) {
                     $aw = (int) ( $a['width'] ?? 0 );
                     $bw = (int) ( $b['width'] ?? 0 );
@@ -184,19 +266,8 @@ class Flickr_Resolver {
                 }
             );
 
-            return $sizes[0]['source'] ?? null;
+            return $candidates[0]['source'] ?? null;
         }
-
-        $candidates = array_filter(
-            $sizes,
-            static function ( $size ) {
-                if ( ! isset( $size['media'] ) || 'photo' !== $size['media'] ) {
-                    return false;
-                }
-
-                return ! empty( $size['source'] );
-            }
-        );
 
         if ( empty( $candidates ) ) {
             return null;

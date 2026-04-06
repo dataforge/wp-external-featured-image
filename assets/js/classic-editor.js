@@ -9,9 +9,22 @@
     const supportsFlickr = !!(data.settings && data.settings.supportsFlickr);
 
     const isHttps = (value) => /^https:\/\//i.test(value);
-    const imageExtensions = (data.validation && data.validation.imageExtensions) || ['jpg', 'jpeg', 'png'];
-    const imageRegex = new RegExp(`\\.(${imageExtensions.join('|')})($|[?&#])`, 'i');
-    const isDirectImage = (value) => imageRegex.test(value);
+    const imageExtensions = (data.validation && data.validation.imageExtensions) || ['jpg', 'jpeg', 'png', 'webp', 'avif'];
+    const imageExtRegex = new RegExp(`\\.(${imageExtensions.join('|')})$`, 'i');
+    const anyExtRegex = /\.[a-z0-9]+$/i;
+    const isDirectImage = (value) => {
+        try {
+            const path = new URL(value).pathname;
+            // Accept known image extensions, or paths with no extension at all
+            // (CDN/image-proxy URLs). Reject paths whose extension is something else.
+            if (imageExtRegex.test(path)) {
+                return true;
+            }
+            return !anyExtRegex.test(path);
+        } catch (e) {
+            return false;
+        }
+    };
     const isFlickrUrl = (value) => /^https:\/\/(?:www\.)?flickr\.com\/photos\/[^/]+\/\d+(?:\/|$)/i.test(value);
 
     let previewContainer = null;
@@ -27,9 +40,11 @@
 
     function showPreview(imageUrl) {
         const container = createPreviewContainer();
-        container.html(
-            '<img src="' + imageUrl + '" alt="Preview" style="width: 100%; height: auto; border-radius: 4px; border: 1px solid #ddd;" />'
-        );
+        const img = $('<img>', {
+            alt: 'Preview',
+            css: { width: '100%', height: 'auto', borderRadius: '4px', border: '1px solid #ddd' }
+        }).attr('src', imageUrl);
+        container.empty().append(img);
     }
 
     function showLoading() {

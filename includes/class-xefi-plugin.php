@@ -40,17 +40,17 @@ class Plugin {
     public const META_PHOTO_ID      = '_xefi_photo_id';
     public const META_ERROR         = '_xefi_error';
     public const META_CACHED_INPUT  = '_xefi_cached_input';
+    public const META_SIZES         = '_xefi_sizes';
 
     /**
      * Default settings.
      */
     protected $default_settings = [
-        'flickr_api_key'    => '',
-        'size_preference'   => 'optimize_social',
-        'cache_ttl_value'   => 24,
-        'cache_ttl_unit'    => 'hours',
-        'cache_ttl'         => DAY_IN_SECONDS,
-        'facebook_app_id'   => '',
+        'flickr_api_key'     => '',
+        'size_preference'    => 'optimize_social',
+        'cache_ttl_value'    => 24,
+        'cache_ttl_unit'     => 'hours',
+        'facebook_app_id'    => '',
         'open_graph_enabled' => false,
     ];
 
@@ -58,23 +58,27 @@ class Plugin {
      * Get singleton instance.
      */
     public static function instance(): Plugin {
-        if ( null === static::$instance ) {
-            static::$instance = new static();
+        if ( null === self::$instance ) {
+            self::$instance = new self();
         }
 
-        return static::$instance;
+        return self::$instance;
     }
 
     /**
      * Bootstraps hooks.
      */
     public function init(): void {
-        add_action( 'plugins_loaded', [ $this, 'load_textdomain' ] );
         add_action( 'init', [ $this, 'register_meta' ] );
         add_action( 'enqueue_block_editor_assets', [ $this, 'enqueue_editor_assets' ] );
         add_action( 'add_meta_boxes', [ $this, 'register_meta_box' ] );
         add_action( 'save_post', [ $this, 'handle_save_post' ], 20, 3 );
+        add_action( 'xefi_resolve_post', [ $this, 'process_post_image' ] );
         add_action( 'rest_api_init', [ $this, 'register_rest_routes' ] );
+        // Register on init priority 99 so any post type registered on init has
+        // landed before we enumerate thumbnail-supporting types.
+        add_action( 'init', [ $this, 'register_rest_save_hooks' ], 99 );
+        add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_classic_editor_assets' ] );
         add_filter( 'has_post_thumbnail', [ $this, 'filter_has_post_thumbnail' ], 10, 3 );
         add_filter( 'post_thumbnail_html', [ $this, 'filter_post_thumbnail_html' ], 10, 5 );
         add_filter( 'get_the_post_thumbnail_url', [ $this, 'filter_post_thumbnail_url' ], 10, 3 );
@@ -92,8 +96,10 @@ class Plugin {
      * Registers the post meta fields used by the plugin.
      */
     public function register_meta(): void {
-        $auth_callback = static function ( $allowed, $meta_key, $post_id ) {
-            return current_user_can( 'edit_post', $post_id );
+        // Signature per WP register_meta auth_callback:
+        // ( bool $allowed, string $meta_key, int $object_id, int $user_id, string $cap, array $caps ).
+        $auth_callback = static function ( $allowed, $meta_key, $object_id ) {
+            return current_user_can( 'edit_post', $object_id );
         };
 
         register_post_meta(
@@ -173,6 +179,18 @@ class Plugin {
                 'sanitize_callback' => 'esc_url_raw',
             ]
         );
+
+        register_post_meta(
+            '',
+            self::META_SIZES,
+            [
+                'type'          => 'array',
+                'single'        => true,
+                'default'       => [],
+                'show_in_rest'  => false,
+                'auth_callback' => $auth_callback,
+            ]
+        );
     }
 
     /**
@@ -188,7 +206,7 @@ class Plugin {
         wp_register_script(
             $handle,
             XEFI_PLUGIN_URL . 'assets/js/editor.js',
-            [ 'wp-data', 'wp-edit-post', 'wp-components', 'wp-element', 'wp-i18n', 'wp-plugins', 'wp-compose', 'wp-api-fetch', 'wp-blocks' ],
+            [ 'wp-data', 'wp-editor', 'wp-components', 'wp-element', 'wp-i18n', 'wp-plugins', 'wp-compose', 'wp-api-fetch', 'wp-blocks' ],
             XEFI_PLUGIN_VERSION,
             true
         );
@@ -212,7 +230,7 @@ class Plugin {
                     'manageOgSettings'     => __( 'Manage Open Graph settings', 'wp-external-featured-image' ),
                 ],
                 'validation' => [
-                    'imageExtensions' => [ 'jpg', 'jpeg', 'png' ],
+                    'imageExtensions' => [ 'jpg', 'jpeg', 'png', 'webp', 'avif' ],
                 ],
                 'settings' => [
                     'supportsFlickr'    => '' !== $settings['flickr_api_key'],
@@ -238,12 +256,17 @@ class Plugin {
                 'permission_callback' => [ $this, 'can_resolve_request' ],
                 'args'                => [
                     'postId' => [
-                        'type'     => 'integer',
-                        'required' => true,
+                        'type'              => 'integer',
+                        'required'          => true,
+                        'validate_callback' => static function ( $v ) {
+                            return is_numeric( $v ) && (int) $v > 0;
+                        },
                     ],
                     'url'    => [
-                        'type'     => 'string',
-                        'required' => true,
+                        'type'              => 'string',
+                        'required'          => true,
+                        'validate_callback' => 'is_string',
+                        'sanitize_callback' => [ $this, 'sanitize_meta_url' ],
                     ],
                 ],
             ]
@@ -325,8 +348,6 @@ class Plugin {
             );
         }
 
-        // Enqueue classic editor JavaScript.
-        add_action( 'admin_enqueue_scripts', [ $this, 'enqueue_classic_editor_assets' ] );
     }
 
     /**
@@ -356,18 +377,17 @@ class Plugin {
             true
         );
 
-        $settings       = $this->with_decrypted_flickr_api_key();
-        $flickr_api_key = $settings['flickr_api_key'];
+        $settings = $this->get_settings();
 
         wp_localize_script(
             $handle,
             'XEFIEditorData',
             [
                 'validation' => [
-                    'imageExtensions' => [ 'jpg', 'jpeg', 'png' ],
+                    'imageExtensions' => [ 'jpg', 'jpeg', 'png', 'webp', 'avif' ],
                 ],
                 'settings' => [
-                    'supportsFlickr' => '' !== $flickr_api_key,
+                    'supportsFlickr' => '' !== ( $settings['flickr_api_key'] ?? '' ),
                 ],
             ]
         );
@@ -378,6 +398,16 @@ class Plugin {
      */
     public function render_meta_box( WP_Post $post ): void {
         wp_nonce_field( 'xefi_save_meta', 'xefi_meta_nonce' );
+        ?>
+        <style>
+            .xefi-native-override-notice {
+                background: #fff3cd;
+                border-left: 4px solid #ffc107;
+                padding: 8px 12px;
+                margin: 12px 0;
+            }
+        </style>
+        <?php
 
         $url      = get_post_meta( $post->ID, self::META_URL, true );
         $error    = get_post_meta( $post->ID, self::META_ERROR, true );
@@ -387,11 +417,11 @@ class Plugin {
             <label for="xefi-external-url">
                 <?php esc_html_e( 'External image or Flickr page URL', 'wp-external-featured-image' ); ?>
             </label>
-            <input type="url" id="xefi-external-url" name="<?php echo esc_attr( self::META_URL ); ?>" value="<?php echo esc_attr( $url ); ?>" class="widefat" placeholder="https://" />
+            <input type="url" id="xefi-external-url" name="xefi_external_url" value="<?php echo esc_attr( $url ); ?>" class="widefat" placeholder="https://" />
             <span class="description"><?php esc_html_e( 'Paste a direct image URL (.jpg/.png) or a Flickr photo URL.', 'wp-external-featured-image' ); ?></span>
         </p>
         <?php if ( $has_native ) : ?>
-            <p style="background: #fff3cd; border-left: 4px solid #ffc107; padding: 8px 12px; margin: 12px 0;">
+            <p class="xefi-native-override-notice">
                 <strong><?php esc_html_e( 'Note:', 'wp-external-featured-image' ); ?></strong>
                 <?php esc_html_e( 'WordPress featured image is set and will be used instead. Remove it to use the external image above.', 'wp-external-featured-image' ); ?>
             </p>
@@ -401,18 +431,18 @@ class Plugin {
         <?php endif; ?>
         <?php
         $settings     = $this->get_settings();
-        $settings_url = esc_url( admin_url( 'options-general.php?page=xefi-settings' ) );
+        $settings_url = admin_url( 'options-general.php?page=xefi-settings' );
 
         if ( empty( $settings['open_graph_enabled'] ) ) :
             ?>
             <p class="description">
                 <?php esc_html_e( 'Open Graph tags are disabled. When enabled, social platforms will use your external image (only when WordPress featured image is not set).', 'wp-external-featured-image' ); ?>
-                <a href="<?php echo $settings_url; ?>"><?php esc_html_e( 'Manage settings', 'wp-external-featured-image' ); ?></a>
+                <a href="<?php echo esc_url( $settings_url ); ?>"><?php esc_html_e( 'Manage settings', 'wp-external-featured-image' ); ?></a>
             </p>
         <?php else : ?>
             <p class="description">
                 <?php esc_html_e( 'Open Graph tags are enabled. When an external image is added above and no WordPress featured image is set, social platforms will use your external image.', 'wp-external-featured-image' ); ?>
-                <a href="<?php echo $settings_url; ?>"><?php esc_html_e( 'Update settings', 'wp-external-featured-image' ); ?></a>
+                <a href="<?php echo esc_url( $settings_url ); ?>"><?php esc_html_e( 'Update settings', 'wp-external-featured-image' ); ?></a>
             </p>
         <?php endif; ?>
         <?php
@@ -434,40 +464,71 @@ class Plugin {
             return;
         }
 
-        if ( isset( $_POST['xefi_meta_nonce'] ) && wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['xefi_meta_nonce'] ) ), 'xefi_save_meta' ) ) {
+        if ( isset( $_POST['xefi_meta_nonce'] ) && wp_verify_nonce( sanitize_text_field( $_POST['xefi_meta_nonce'] ), 'xefi_save_meta' ) ) {
             $url = '';
-            if ( isset( $_POST[ self::META_URL ] ) ) {
-                $url = esc_url_raw( wp_unslash( $_POST[ self::META_URL ] ) );
+            if ( isset( $_POST['xefi_external_url'] ) ) {
+                $url = $this->sanitize_meta_url( wp_unslash( $_POST['xefi_external_url'] ) );
             }
 
-            update_post_meta( $post_id, self::META_URL, $url );
+            if ( '' === $url ) {
+                delete_post_meta( $post_id, self::META_URL );
+            } else {
+                update_post_meta( $post_id, self::META_URL, $url );
+            }
         }
 
-        $this->process_post_image( $post_id );
+        $this->maybe_schedule_resolve( $post_id );
+    }
+
+    /**
+     * Register rest_after_insert_* hooks for every thumbnail-supporting post type
+     * so block-editor saves can schedule resolution after meta has landed.
+     */
+    public function register_rest_save_hooks(): void {
+        foreach ( get_post_types_by_support( 'thumbnail' ) as $post_type ) {
+            add_action( "rest_after_insert_{$post_type}", [ $this, 'handle_rest_save' ], 10, 1 );
+        }
+    }
+
+    /**
+     * REST save callback — schedule resolution once meta writes are committed.
+     *
+     * @param WP_Post $post Post object.
+     */
+    public function handle_rest_save( $post ): void {
+        if ( ! $post instanceof WP_Post ) {
+            return;
+        }
+        $this->maybe_schedule_resolve( $post->ID );
+    }
+
+    /**
+     * Schedule a single resolve event for a post if one isn't already pending.
+     */
+    protected function maybe_schedule_resolve( int $post_id ): void {
+        $stored_url = trim( (string) get_post_meta( $post_id, self::META_URL, true ) );
+        if ( '' === $stored_url ) {
+            return;
+        }
+        if ( wp_next_scheduled( 'xefi_resolve_post', [ $post_id ] ) ) {
+            return;
+        }
+        wp_schedule_single_event( time(), 'xefi_resolve_post', [ $post_id ] );
     }
 
     /**
      * Ensures the stored metadata reflects the chosen external image.
      */
-    protected function process_post_image( int $post_id ): void {
+    public function process_post_image( int $post_id ): void {
         $url = trim( (string) get_post_meta( $post_id, self::META_URL, true ) );
 
         if ( '' === $url ) {
-            $this->clear_external_state( $post_id, false );
+            $this->clear_external_state( $post_id, true );
             $this->clear_error( $post_id );
             return;
         }
 
-        $cached_input = get_post_meta( $post_id, self::META_CACHED_INPUT, true );
-        $resolved     = get_post_meta( $post_id, self::META_RESOLVED, true );
-        $error        = get_post_meta( $post_id, self::META_ERROR, true );
-
-        if ( $resolved && $cached_input === $url && ! $error ) {
-            // Already resolved with the same input.
-            return;
-        }
-
-        $result = $this->maybe_resolve_post_image( $post_id, true );
+        $result = $this->maybe_resolve_post_image( $post_id, false );
         if ( is_wp_error( $result ) ) {
             $this->set_error( $post_id, $result->get_error_message() );
         } else {
@@ -485,7 +546,7 @@ class Plugin {
     public function maybe_resolve_post_image( int $post_id, bool $force = false ) {
         $url = trim( (string) get_post_meta( $post_id, self::META_URL, true ) );
         if ( '' === $url ) {
-            $this->clear_external_state( $post_id, false );
+            $this->clear_external_state( $post_id, true );
             return new WP_Error( 'xefi_empty_url', __( 'No external URL provided.', 'wp-external-featured-image' ) );
         }
 
@@ -504,9 +565,14 @@ class Plugin {
 
         $cached_input = get_post_meta( $post_id, self::META_CACHED_INPUT, true );
         $resolved     = get_post_meta( $post_id, self::META_RESOLVED, true );
+        $resolved_at  = (int) get_post_meta( $post_id, self::META_RESOLVED_AT, true );
         $error        = get_post_meta( $post_id, self::META_ERROR, true );
 
-        if ( ! $force && $resolved && $cached_input === $url && ! $error ) {
+        $settings_for_ttl = $this->get_settings();
+        $cache_ttl        = (int) ( $settings_for_ttl['cache_ttl'] ?? DAY_IN_SECONDS );
+        $is_fresh         = $resolved_at > 0 && ( time() - $resolved_at ) < $cache_ttl;
+
+        if ( ! $force && $resolved && $cached_input === $url && ! $error && $is_fresh ) {
             return [
                 'url'          => $resolved,
                 'original_url' => $url,
@@ -519,6 +585,7 @@ class Plugin {
             update_post_meta( $post_id, self::META_RESOLVED_AT, time() );
             update_post_meta( $post_id, self::META_CACHED_INPUT, $url );
             delete_post_meta( $post_id, self::META_PHOTO_ID );
+            delete_post_meta( $post_id, self::META_SIZES );
 
             return [
                 'url'          => $url,
@@ -534,7 +601,11 @@ class Plugin {
 
         if ( is_wp_error( $result ) ) {
             if ( $resolved && ! $force ) {
-                // Keep the last resolved URL if available.
+                // Keep the last resolved URL if available, but bump the
+                // resolved-at timestamp so we honor the TTL backoff and don't
+                // hammer the Flickr API on every page load.
+                update_post_meta( $post_id, self::META_RESOLVED_AT, time() );
+
                 return [
                     'url'          => $resolved,
                     'original_url' => $url,
@@ -549,6 +620,11 @@ class Plugin {
         update_post_meta( $post_id, self::META_RESOLVED_AT, time() );
         update_post_meta( $post_id, self::META_PHOTO_ID, $result['photo_id'] );
         update_post_meta( $post_id, self::META_CACHED_INPUT, $url );
+        if ( ! empty( $result['sizes'] ) && is_array( $result['sizes'] ) ) {
+            update_post_meta( $post_id, self::META_SIZES, $result['sizes'] );
+        } else {
+            delete_post_meta( $post_id, self::META_SIZES );
+        }
 
         return [
             'url'          => $result['url'],
@@ -584,14 +660,42 @@ class Plugin {
             return $html;
         }
 
-        $attributes = [
-            'src'      => $data['url'],
+        $src    = $data['url'];
+        $srcset = '';
+        $sizes_attr = '';
+        if ( ! empty( $data['sizes'] ) && 'flickr' === ( $data['type'] ?? '' ) ) {
+            $picked = Flickr_Resolver::instance()->pick_size_for( $data['sizes'], $size );
+            if ( $picked ) {
+                $src = $picked;
+            }
+
+            $srcset_parts = [];
+            foreach ( $data['sizes'] as $size_info ) {
+                if ( empty( $size_info['source'] ) || empty( $size_info['width'] ) ) {
+                    continue;
+                }
+                $srcset_parts[] = esc_url_raw( $size_info['source'] ) . ' ' . (int) $size_info['width'] . 'w';
+            }
+            if ( ! empty( $srcset_parts ) ) {
+                $srcset     = implode( ', ', $srcset_parts );
+                $sizes_attr = apply_filters( 'xefi_thumbnail_sizes_attr', '(max-width: 1200px) 100vw, 1200px', $post_id, $size );
+            }
+        }
+
+        $defaults = [
+            'src'      => $src,
             'class'    => 'wp-post-image',
             'alt'      => get_the_title( $post_id ),
             'loading'  => 'lazy',
             'decoding' => 'async',
         ];
 
+        if ( '' !== $srcset ) {
+            $defaults['srcset'] = $srcset;
+            $defaults['sizes']  = $sizes_attr;
+        }
+
+        $attributes = array_merge( $defaults, (array) $attr );
         $attributes = apply_filters( 'xefi_thumbnail_img_attrs', $attributes, $post_id );
 
         $attr_pairs = [];
@@ -618,9 +722,20 @@ class Plugin {
             return $url;
         }
 
+        if ( get_post_meta( (int) $post_id, '_thumbnail_id', true ) ) {
+            return $url;
+        }
+
         $data = $this->get_external_image_data( (int) $post_id );
         if ( empty( $data['url'] ) ) {
             return $url;
+        }
+
+        if ( ! empty( $data['sizes'] ) && 'flickr' === ( $data['type'] ?? '' ) ) {
+            $picked = Flickr_Resolver::instance()->pick_size_for( $data['sizes'], $size );
+            if ( $picked ) {
+                return $picked;
+            }
         }
 
         return $data['url'];
@@ -672,11 +787,6 @@ class Plugin {
             'fb:app_id'      => $this->get_fb_app_id(),
         ];
 
-        $logo = $this->get_og_logo_url( $post_id );
-        if ( $logo ) {
-            $og_tags['og:logo'] = $logo;
-        }
-
         $og_tags = apply_filters( 'xefi_og_tags', $og_tags, $post_id );
 
         foreach ( $og_tags as $property => $value ) {
@@ -684,15 +794,20 @@ class Plugin {
                 continue;
             }
 
-            $value = 'og:url' === $property || 'og:image' === $property || 'og:logo' === $property
-                ? esc_url( $value )
-                : esc_attr( $value );
-
-            printf( "\n<meta property=\"%s\" content=\"%s\" />\n", esc_attr( $property ), $value ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+            if ( 'og:url' === $property || 'og:image' === $property ) {
+                printf( "<meta property=\"%s\" content=\"%s\" />\n", esc_attr( $property ), esc_url( $value ) );
+            } else {
+                printf( "<meta property=\"%s\" content=\"%s\" />\n", esc_attr( $property ), esc_attr( $value ) );
+            }
         }
 
-        echo '<meta name="twitter:card" content="summary_large_image" />' . "\n"; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
-        echo "<meta name=\"twitter:image\" content=\"{$url}\" />\n"; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+        // Only emit Twitter card tags if og:image survived filtering — otherwise
+        // we'd advertise a card with no image.
+        $twitter_image = isset( $og_tags['og:image'] ) ? (string) $og_tags['og:image'] : '';
+        if ( '' !== $twitter_image ) {
+            echo '<meta name="twitter:card" content="summary_large_image" />' . "\n";
+            printf( '<meta name="twitter:image" content="%s" />' . "\n", esc_url( $twitter_image ) );
+        }
     }
 
     /**
@@ -705,8 +820,6 @@ class Plugin {
         if ( 'page' === $post_type ) {
             $type = 'website';
         }
-
-        $type = $type ?: 'website';
 
         return apply_filters( 'xefi_og_type', $type, $post_id );
     }
@@ -739,8 +852,6 @@ class Plugin {
             $description = get_bloginfo( 'name', 'display' );
         }
 
-        $description = $description ?: '';
-
         return apply_filters( 'xefi_og_description', $description, $post_id );
     }
 
@@ -749,10 +860,6 @@ class Plugin {
      */
     private function get_og_locale(): string {
         $locale = get_locale();
-
-        if ( $locale ) {
-            $locale = str_replace( '_', '-', $locale );
-        }
 
         return apply_filters( 'xefi_og_locale', $locale );
     }
@@ -780,8 +887,6 @@ class Plugin {
         if ( '' === $title ) {
             $title = get_bloginfo( 'name', 'display' );
         }
-
-        $title = $title ?: '';
 
         return apply_filters( 'xefi_og_title', $title, $post_id );
 
@@ -826,20 +931,6 @@ class Plugin {
     }
 
     /**
-     * Attempt to load a site logo URL for Open Graph consumers.
-     */
-    private function get_og_logo_url( int $post_id ): string {
-        $logo_id = get_theme_mod( 'custom_logo' );
-        $logo    = '';
-
-        if ( $logo_id ) {
-            $logo = wp_get_attachment_image_url( $logo_id, 'full' );
-        }
-
-        return apply_filters( 'xefi_og_logo_url', $logo, $post_id );
-    }
-
-    /**
      * Adds the plugin settings page.
      */
     public function register_settings_page(): void {
@@ -856,10 +947,15 @@ class Plugin {
      * Adds a settings shortcut to the Plugins listing.
      */
     public function add_settings_link( array $links ): array {
-        $url            = admin_url( 'options-general.php?page=xefi-settings' );
+        $settings_url   = admin_url( 'options-general.php?page=xefi-settings' );
         $settings_label = __( 'Settings', 'wp-external-featured-image' );
-        $settings_link  = sprintf( '<a href="%s">%s</a>', esc_url( $url ), esc_html( $settings_label ) );
+        $settings_link  = sprintf( '<a href="%s">%s</a>', esc_url( $settings_url ), esc_html( $settings_label ) );
 
+        $check_url   = Updater::get_check_updates_url();
+        $check_label = __( 'Check for Updates', 'wp-external-featured-image' );
+        $check_link  = sprintf( '<a href="%s">%s</a>', esc_url( $check_url ), esc_html( $check_label ) );
+
+        array_unshift( $links, $check_link );
         array_unshift( $links, $settings_link );
 
         return $links;
@@ -936,13 +1032,23 @@ class Plugin {
     public function sanitize_settings( array $input ): array {
         $settings = $this->get_settings();
 
-        if ( isset( $input['flickr_api_key'] ) ) {
+        if ( ! empty( $input['flickr_api_key_clear'] ) ) {
+            $settings['flickr_api_key'] = '';
+        } elseif ( isset( $input['flickr_api_key'] ) ) {
+            // Empty submission means "leave existing key unchanged"; only
+            // overwrite when the admin types a new value.
             $api_key = sanitize_text_field( $input['flickr_api_key'] );
-
-            // If the input is obscured (starts with x's), don't update.
-            if ( '' !== $api_key && ! preg_match( '/^x+/', $api_key ) ) {
-                // Encrypt the API key before storing.
-                $settings['flickr_api_key'] = Encryption::encrypt( $api_key );
+            if ( '' !== $api_key ) {
+                try {
+                    $settings['flickr_api_key'] = Encryption::encrypt( $api_key );
+                } catch ( \RuntimeException $e ) {
+                    add_settings_error(
+                        self::OPTION_NAME,
+                        'xefi_encrypt_failed',
+                        __( 'Could not save Flickr API key — encryption failed. The previous key (if any) has been kept.', 'wp-external-featured-image' ),
+                        'error'
+                    );
+                }
             }
         }
 
@@ -953,7 +1059,7 @@ class Plugin {
         }
 
         if ( isset( $input['facebook_app_id'] ) ) {
-            $app_id = preg_replace( '/[^0-9]/', '', (string) $input['facebook_app_id'] );
+            $app_id = (string) preg_replace( '/[^0-9]/', '', (string) $input['facebook_app_id'] );
             $settings['facebook_app_id'] = $app_id;
         }
 
@@ -967,16 +1073,10 @@ class Plugin {
             $unit  = 'hours';
         }
 
-        $seconds = $value * MINUTE_IN_SECONDS;
-        if ( 'hours' === $unit ) {
-            $seconds = $value * HOUR_IN_SECONDS;
-        } elseif ( 'days' === $unit ) {
-            $seconds = $value * DAY_IN_SECONDS;
-        }
-
         $settings['cache_ttl_value'] = $value;
         $settings['cache_ttl_unit']  = $unit;
-        $settings['cache_ttl']       = max( MINUTE_IN_SECONDS, $seconds );
+        // cache_ttl is a derived value injected by get_settings(); never persist it.
+        unset( $settings['cache_ttl'] );
 
         return $settings;
     }
@@ -1007,14 +1107,37 @@ class Plugin {
      * Render Flickr API key field.
      */
     public function render_setting_api_key(): void {
-        $settings = $this->with_decrypted_flickr_api_key();
-        $api_key  = $settings['flickr_api_key'];
+        $raw_settings = $this->get_settings();
+        $stored_key   = isset( $raw_settings['flickr_api_key'] ) ? (string) $raw_settings['flickr_api_key'] : '';
+        $settings     = $this->with_decrypted_flickr_api_key();
+        $api_key      = $settings['flickr_api_key'];
 
-        // Obscure the decrypted key for display.
-        $display_value = '' !== $api_key ? Encryption::obscure( $api_key ) : '';
+        if ( '' !== $stored_key && '' === $api_key ) {
+            echo '<div class="notice notice-error inline"><p>';
+            esc_html_e( 'Stored Flickr API key could not be decrypted (the WordPress AUTH_KEY may have been rotated). Please re-enter the key below.', 'wp-external-featured-image' );
+            echo '</p></div>';
+        }
+
+        // Render with an empty value and an obscured placeholder so the real
+        // (or obscured) key never round-trips through the form. An empty submit
+        // means "leave unchanged"; a non-empty submit replaces the stored key.
+        if ( '' !== $api_key ) {
+            $placeholder = Encryption::obscure( $stored_key );
+        } else {
+            $placeholder = __( 'Enter your Flickr API key', 'wp-external-featured-image' );
+        }
         ?>
-        <input type="text" class="regular-text" name="<?php echo esc_attr( self::OPTION_NAME ); ?>[flickr_api_key]" value="<?php echo esc_attr( $display_value ); ?>" autocomplete="off" placeholder="<?php esc_attr_e( 'Enter your Flickr API key', 'wp-external-featured-image' ); ?>" />
-        <p class="description"><?php esc_html_e( 'Required to resolve Flickr photo page URLs.', 'wp-external-featured-image' ); ?></p>
+        <input type="text" id="xefi-flickr-api-key" class="regular-text" name="<?php echo esc_attr( self::OPTION_NAME ); ?>[flickr_api_key]" value="" autocomplete="off" placeholder="<?php echo esc_attr( $placeholder ); ?>" />
+        <?php if ( '' !== $stored_key ) : ?>
+            <label style="display:block;margin-top:6px;">
+                <input type="checkbox" name="<?php echo esc_attr( self::OPTION_NAME ); ?>[flickr_api_key_clear]" value="1" />
+                <?php esc_html_e( 'Remove stored Flickr API key', 'wp-external-featured-image' ); ?>
+            </label>
+        <?php endif; ?>
+        <p class="description">
+            <?php esc_html_e( 'Required to resolve Flickr photo page URLs.', 'wp-external-featured-image' ); ?>
+            <a href="https://www.flickr.com/services/apps/by/me" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'Get your Flickr API key', 'wp-external-featured-image' ); ?></a>
+        </p>
         <?php
     }
 
@@ -1026,7 +1149,10 @@ class Plugin {
         $app_id   = isset( $settings['facebook_app_id'] ) ? (string) $settings['facebook_app_id'] : '';
         ?>
         <input type="text" class="regular-text" name="<?php echo esc_attr( self::OPTION_NAME ); ?>[facebook_app_id]" value="<?php echo esc_attr( $app_id ); ?>" placeholder="<?php esc_attr_e( 'Enter your Facebook App ID', 'wp-external-featured-image' ); ?>" />
-        <p class="description"><?php esc_html_e( 'Used for Facebook Open Graph validation.', 'wp-external-featured-image' ); ?></p>
+        <p class="description">
+            <?php esc_html_e( 'Used for Facebook Open Graph validation.', 'wp-external-featured-image' ); ?>
+            <a href="https://developers.facebook.com/apps" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'Get your Facebook App ID', 'wp-external-featured-image' ); ?></a>
+        </p>
         <?php
     }
 
@@ -1087,7 +1213,24 @@ class Plugin {
             $saved = [];
         }
 
-        return wp_parse_args( $saved, $this->default_settings );
+        $settings = wp_parse_args( $saved, $this->default_settings );
+
+        $value = absint( $settings['cache_ttl_value'] ?? 24 );
+        $unit  = $settings['cache_ttl_unit'] ?? 'hours';
+        if ( $value <= 0 ) {
+            $value = 24;
+            $unit  = 'hours';
+        }
+        if ( 'days' === $unit ) {
+            $seconds = $value * DAY_IN_SECONDS;
+        } elseif ( 'minutes' === $unit ) {
+            $seconds = $value * MINUTE_IN_SECONDS;
+        } else {
+            $seconds = $value * HOUR_IN_SECONDS;
+        }
+        $settings['cache_ttl'] = max( MINUTE_IN_SECONDS, $seconds );
+
+        return $settings;
     }
 
     /**
@@ -1125,6 +1268,11 @@ class Plugin {
             return false;
         }
 
+        // Cheap early-out before reading the full data set on archive loops.
+        if ( ! get_post_meta( $post_id, self::META_RESOLVED, true ) ) {
+            return false;
+        }
+
         $data = $this->get_external_image_data( $post_id );
         return ! empty( $data['url'] );
     }
@@ -1141,24 +1289,16 @@ class Plugin {
         $url      = get_post_meta( $post_id, self::META_URL, true );
 
         if ( ! $resolved || ! $url ) {
-            $result = $this->maybe_resolve_post_image( $post_id, false );
-            if ( is_wp_error( $result ) ) {
-                return [];
-            }
-
-            $resolved = $result['url'] ?? '';
-            $url      = $result['original_url'] ?? $url;
-        }
-
-        if ( ! $resolved ) {
             return [];
         }
 
+        $sizes = get_post_meta( $post_id, self::META_SIZES, true );
         return [
             'url'          => $resolved,
             'original_url' => $url,
             'type'         => $this->is_flickr_url( $url ) ? 'flickr' : 'direct',
             'photo_id'     => get_post_meta( $post_id, self::META_PHOTO_ID, true ),
+            'sizes'        => is_array( $sizes ) ? $sizes : [],
         ];
     }
 
@@ -1170,16 +1310,10 @@ class Plugin {
         delete_post_meta( $post_id, self::META_RESOLVED_AT );
         delete_post_meta( $post_id, self::META_PHOTO_ID );
         delete_post_meta( $post_id, self::META_CACHED_INPUT );
+        delete_post_meta( $post_id, self::META_SIZES );
         if ( ! $preserve_url ) {
             delete_post_meta( $post_id, self::META_URL );
         }
-    }
-
-    /**
-     * Load the plugin textdomain.
-     */
-    public function load_textdomain(): void {
-        load_plugin_textdomain( 'wp-external-featured-image', false, dirname( plugin_basename( XEFI_PLUGIN_FILE ) ) . '/languages' );
     }
 
     /**
@@ -1214,6 +1348,10 @@ class Plugin {
             return '';
         }
 
+        if ( ! $this->is_direct_image_url( $sanitized ) && ! $this->is_flickr_url( $sanitized ) ) {
+            return '';
+        }
+
         return $sanitized;
     }
 
@@ -1235,12 +1373,30 @@ class Plugin {
      * Determine if the URL appears to be a direct image URL.
      */
     protected function is_direct_image_url( string $url ): bool {
+        // Require a known image extension. Extensionless CDN/proxy URLs are
+        // rejected by default to prevent HTML pages from being treated as
+        // images; sites that need them can opt in via the filter below.
         $path = wp_parse_url( $url, PHP_URL_PATH );
         if ( ! $path ) {
             return false;
         }
 
+        $allowed   = [ 'jpg', 'jpeg', 'png', 'webp', 'avif' ];
         $extension = strtolower( pathinfo( $path, PATHINFO_EXTENSION ) );
-        return in_array( $extension, [ 'jpg', 'jpeg', 'png' ], true );
+
+        if ( '' === $extension ) {
+            // Extensionless paths (CDN/image-proxy URLs like /image?id=123) are
+            // accepted intentionally. Paths with a non-image extension (e.g.
+            // foo.exe, foo.jpg.exe) are still rejected by the check below.
+            /**
+             * Allow extensionless URLs to be treated as direct images.
+             *
+             * @param bool   $allow Whether to allow. Defaults to true.
+             * @param string $url   The URL being validated.
+             */
+            return (bool) apply_filters( 'xefi_allow_extensionless_image_urls', true, $url );
+        }
+
+        return in_array( $extension, $allowed, true );
     }
 }
