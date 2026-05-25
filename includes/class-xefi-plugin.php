@@ -296,6 +296,25 @@ class Plugin {
             return new WP_Error( 'xefi_invalid_url', __( 'Enter a direct .jpg/.png image URL or a Flickr photo URL.', 'wp-external-featured-image' ), [ 'status' => 400 ] );
         }
 
+        if ( $this->is_flickr_url( $url ) ) {
+            $settings = $this->with_decrypted_flickr_api_key();
+
+            $resolver = Flickr_Resolver::instance();
+            $result   = $resolver->resolve( $url, $settings );
+
+            if ( is_wp_error( $result ) ) {
+                $result->add_data( [ 'status' => 400 ] );
+                return $result;
+            }
+
+            return [
+                'url'          => $result['url'],
+                'original_url' => $url,
+                'photo_id'     => $result['photo_id'],
+                'type'         => 'flickr',
+            ];
+        }
+
         if ( $this->is_direct_image_url( $url ) ) {
             return [
                 'url'          => $url,
@@ -304,26 +323,7 @@ class Plugin {
             ];
         }
 
-        if ( ! $this->is_flickr_url( $url ) ) {
-            return new WP_Error( 'xefi_invalid_url', __( 'Enter a direct .jpg/.png image URL or a Flickr photo URL.', 'wp-external-featured-image' ), [ 'status' => 400 ] );
-        }
-
-        $settings = $this->with_decrypted_flickr_api_key();
-
-        $resolver = Flickr_Resolver::instance();
-        $result   = $resolver->resolve( $url, $settings );
-
-        if ( is_wp_error( $result ) ) {
-            $result->add_data( [ 'status' => 400 ] );
-            return $result;
-        }
-
-        return [
-            'url'          => $result['url'],
-            'original_url' => $url,
-            'photo_id'     => $result['photo_id'],
-            'type'         => 'flickr',
-        ];
+        return new WP_Error( 'xefi_invalid_url', __( 'Enter a direct .jpg/.png image URL or a Flickr photo URL.', 'wp-external-featured-image' ), [ 'status' => 400 ] );
     }
 
     /**
@@ -580,7 +580,7 @@ class Plugin {
             ];
         }
 
-        if ( $is_direct ) {
+        if ( $is_direct && ! $is_flickr ) {
             update_post_meta( $post_id, self::META_RESOLVED, $url );
             update_post_meta( $post_id, self::META_RESOLVED_AT, time() );
             update_post_meta( $post_id, self::META_CACHED_INPUT, $url );
@@ -711,7 +711,17 @@ class Plugin {
             $attr_pairs[] = sprintf( '%s="%s"', esc_attr( $key ), $formatted );
         }
 
-        return '<img ' . implode( ' ', $attr_pairs ) . ' />';
+        $img = '<img ' . implode( ' ', $attr_pairs ) . ' />';
+
+        if ( 'flickr' === ( $data['type'] ?? '' ) && ! empty( $data['original_url'] ) ) {
+            $img = sprintf(
+                '<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>',
+                esc_url( $data['original_url'] ),
+                $img
+            );
+        }
+
+        return $img;
     }
 
     /**
@@ -1415,7 +1425,7 @@ class Plugin {
              * @param bool   $allow Whether to allow. Defaults to true.
              * @param string $url   The URL being validated.
              */
-            return (bool) apply_filters( 'xefi_allow_extensionless_image_urls', true, $url );
+            return (bool) apply_filters( 'xefi_allow_extensionless_image_urls', false, $url );
         }
 
         return in_array( $extension, $allowed, true );

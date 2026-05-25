@@ -110,7 +110,7 @@
                 };
             }
 
-            if ( url && isDirectImage( url ) && isHttps( url ) ) {
+            if ( url && isDirectImage( url ) && isHttps( url ) && ! isFlickrUrl( url ) ) {
                 if ( previewUrl !== url ) {
                     setPreviewUrl( url );
                 }
