@@ -713,7 +713,7 @@ class Plugin {
 
         $img = '<img ' . implode( ' ', $attr_pairs ) . ' />';
 
-        if ( 'flickr' === ( $data['type'] ?? '' ) && ! empty( $data['original_url'] ) ) {
+        if ( 'flickr' === ( $data['type'] ?? '' ) && ! empty( $data['original_url'] ) && is_singular() ) {
             $img = sprintf(
                 '<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>',
                 esc_url( $data['original_url'] ),
