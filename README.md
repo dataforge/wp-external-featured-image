@@ -22,7 +22,7 @@ WP External Featured Image lets editors use remote images as if they were native
 2. Select **External** and paste either:
    - A direct HTTPS image URL ending in `.jpg`, `.jpeg`, `.png`, `.webp`, or `.avif`, or
    - A direct HTTPS URL with no file extension (CDN/image-proxy URLs such as `https://cdn.example.com/image?id=123`) — only when explicitly enabled via the `xefi_allow_extensionless_image_urls` filter (rejected by default), or
-   - A Flickr photo page URL (e.g. `https://www.flickr.com/photos/user/1234567890/`).
+   - A Flickr photo page URL (e.g. `https://www.flickr.com/photos/user/1234567890/`) or a Flickr short URL (e.g. `https://flic.kr/p/abc123`).
 3. Save or update the post. The plugin resolves Flickr URLs to the best available image size (preferring ≥1200px landscape when possible) and caches the result.
 4. On the front end, the external image is output wherever the theme requests the featured image. If you set a native featured image from the Media Library, it automatically overrides the external URL.
 
@@ -41,8 +41,7 @@ When enabled, the plugin also injects Open Graph and Twitter Card tags for exter
 
 ## Limitations
 
-- Flickr short URLs (`https://flic.kr/p/...`) are not supported — paste the full `https://www.flickr.com/photos/<user>/<id>/` URL instead.
-- Extensionless image URLs (e.g. `https://cdn.example.com/image?id=123`) are rejected by default to avoid treating HTML pages as images; sites that serve images this way can allow them by returning `true` from the `xefi_allow_extensionless_image_urls` filter.
+- Extensionless image URLs (e.g. `https://cdn.example.com/image?id=123`) are rejected by default to avoid treating HTML pages as images. Sites that serve images this way can opt in by returning `true` from the `xefi_allow_extensionless_image_urls` filter; the plugin never fetches the URL server-side (which would risk SSRF) — an opted-in URL is only ever loaded as an `<img src>` by the visitor's browser.
 
 ## Requirements
 

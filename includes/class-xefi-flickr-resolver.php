@@ -36,18 +36,70 @@ class Flickr_Resolver {
     }
 
     /**
-     * Extract the Flickr photo ID from a page URL.
+     * Base58 alphabet used by Flickr short (flic.kr/p/<code>) URLs.
      *
-     * @param string $url Flickr page URL.
+     * Excludes the visually ambiguous characters 0, O, I and l.
+     */
+    private const FLICKR_BASE58_ALPHABET = '123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ';
+
+    /**
+     * Extract the Flickr photo ID from a page or short URL.
+     *
+     * Handles both the canonical photo page (flickr.com/photos/<user>/<id>/)
+     * and the short form (flic.kr/p/<base58>), decoding the latter locally.
+     *
+     * @param string $url Flickr page or short URL.
      * @return string|null The extracted photo ID or null.
      */
     public function extract_photo_id( string $url ): ?string {
         $pattern = '#^https://(?:www\.)?flickr\.com/photos/[^/]+/(\d+)(?:/|$)#i';
-        if ( ! preg_match( $pattern, $url, $matches ) ) {
-            return null;
+        if ( preg_match( $pattern, $url, $matches ) ) {
+            return $matches[1];
         }
 
-        return $matches[1];
+        // Short URLs: https://flic.kr/p/<base58 code>
+        if ( preg_match( '#^https://flic\.kr/p/([1-9A-HJ-NP-Za-km-z]+)/?$#', $url, $matches ) ) {
+            return $this->base58_decode( $matches[1] );
+        }
+
+        return null;
+    }
+
+    /**
+     * Decode a Flickr base58 short code into its numeric photo ID.
+     *
+     * Uses bcmath when available so very large IDs are handled exactly on any
+     * platform; falls back to native integer math otherwise (sufficient for
+     * current Flickr IDs on 64-bit PHP).
+     *
+     * @param string $code Base58 code (already validated against the alphabet).
+     * @return string|null Numeric photo ID as a string, or null on invalid input.
+     */
+    private function base58_decode( string $code ): ?string {
+        $alphabet = self::FLICKR_BASE58_ALPHABET;
+        $base     = 58;
+        $length   = strlen( $code );
+        $use_bc   = function_exists( 'bcadd' );
+
+        $num     = '0';
+        $int_num = 0;
+
+        for ( $i = 0; $i < $length; $i++ ) {
+            $position = strpos( $alphabet, $code[ $i ] );
+            if ( false === $position ) {
+                return null;
+            }
+
+            if ( $use_bc ) {
+                $num = bcadd( bcmul( $num, (string) $base ), (string) $position );
+            } else {
+                $int_num = ( $int_num * $base ) + $position;
+            }
+        }
+
+        $result = $use_bc ? $num : (string) $int_num;
+
+        return '' === $result ? null : $result;
     }
 
     /**

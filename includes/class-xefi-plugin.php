@@ -1394,10 +1394,15 @@ class Plugin {
     }
 
     /**
-     * Determine if the URL is a Flickr page.
+     * Determine if the URL is a Flickr photo page or short URL.
      */
     protected function is_flickr_url( string $url ): bool {
-        return (bool) preg_match( '#^https://(?:www\.)?flickr\.com/photos/[^/]+/\d+(?:/|$)#i', $url );
+        if ( preg_match( '#^https://(?:www\.)?flickr\.com/photos/[^/]+/\d+(?:/|$)#i', $url ) ) {
+            return true;
+        }
+
+        // Short URLs: https://flic.kr/p/<base58 code>
+        return (bool) preg_match( '#^https://flic\.kr/p/[1-9A-HJ-NP-Za-km-z]+/?$#', $url );
     }
 
     /**
@@ -1420,10 +1425,17 @@ class Plugin {
             // rejected by default; sites that serve images this way can opt in
             // via the filter below. Paths with a non-image extension (e.g.
             // foo.exe, foo.jpg.exe) are always rejected by the check below.
+            //
+            // Note: the plugin deliberately does NOT fetch the URL server-side
+            // to sniff its content type. Doing so on an arbitrary, editor-
+            // supplied URL would create an SSRF vector (probing internal
+            // hosts / cloud metadata). When a site opts in via this filter the
+            // URL is only ever used as an <img src> loaded by the visitor's
+            // browser, never requested by the server.
             /**
              * Allow extensionless URLs to be treated as direct images.
              *
-             * @param bool   $allow Whether to allow. Defaults to true.
+             * @param bool   $allow Whether to allow. Defaults to false.
              * @param string $url   The URL being validated.
              */
             return (bool) apply_filters( 'xefi_allow_extensionless_image_urls', false, $url );

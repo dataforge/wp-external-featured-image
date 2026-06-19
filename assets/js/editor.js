@@ -38,7 +38,9 @@
             return false;
         }
     };
-    const isFlickrUrl = ( value ) => /^https:\/\/(?:www\.)?flickr\.com\/photos\/[^/]+\/\d+(?:\/|$)/i.test( value );
+    const isFlickrUrl = ( value ) =>
+        /^https:\/\/(?:www\.)?flickr\.com\/photos\/[^/]+\/\d+(?:\/|$)/i.test( value ) ||
+        /^https:\/\/flic\.kr\/p\/[1-9A-HJ-NP-Za-km-z]+\/?$/.test( value );
 
     const Panel = () => {
         const { meta, url, resolvedUrl, error, photoId, hasFeatured, postId } = useSelect( ( select ) => {
