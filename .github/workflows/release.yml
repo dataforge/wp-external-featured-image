@@ -1,0 +1,67 @@
+name: Release
+
+# Publish-on-tag: pushing a vX.Y.Z tag builds the plugin zip and creates a
+# published GitHub Release with it attached. The in-plugin updater queries
+# releases/latest, so the new version becomes available to sites once this
+# finishes. Pushing to a branch does nothing — only tags trigger a release.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  SLUG: wp-external-featured-image
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches plugin header version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          HDR="$(grep -m1 -oP '^\s*\*\s*Version:\s*\K[0-9][0-9.]*' "$SLUG.php")"
+          echo "tag=$TAG header=$HDR"
+          if [ -z "$HDR" ]; then
+            echo "::error::Could not read Version header from $SLUG.php"
+            exit 1
+          fi
+          if [ "$TAG" != "$HDR" ]; then
+            echo "::error::Tag v$TAG does not match plugin header Version: $HDR. Bump the header to match before tagging (this is what caused the v1.1.3/v1.1.4 update loop)."
+            exit 1
+          fi
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.0'
+
+      - name: Lint changed PHP
+        run: find . -name '*.php' -not -path './.git/*' -print0 | xargs -0 -n1 -P4 php -l
+
+      - name: Build release zip
+        run: python3 build_plugin.py "$SLUG" . "$SLUG.zip"
+
+      - name: Verify zip is forward-slash with a single top-level folder
+        run: |
+          python3 - "$SLUG.zip" "$SLUG" <<'PY'
+          import sys, zipfile
+          zip_path, slug = sys.argv[1], sys.argv[2]
+          names = zipfile.ZipFile(zip_path).namelist()
+          bs = chr(92)
+          assert all(bs not in n for n in names), "BACKSLASH FOUND in zip entry paths"
+          tops = {n.split('/')[0] for n in names}
+          assert tops == {slug}, f"expected single top folder {slug!r}, got {tops}"
+          print("OK", len(names), "entries")
+          PY
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          files: ${{ env.SLUG }}.zip
+          generate_release_notes: true

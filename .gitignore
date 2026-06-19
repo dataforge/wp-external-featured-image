@@ -1,0 +1,3 @@
+# Release zips are built by CI (or build_plugin.py) and attached to GitHub
+# Releases — never commit the artifact itself.
+*.zip
