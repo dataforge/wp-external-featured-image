@@ -1417,8 +1417,9 @@ class Plugin {
 
         if ( '' === $extension ) {
             // Extensionless paths (CDN/image-proxy URLs like /image?id=123) are
-            // accepted intentionally. Paths with a non-image extension (e.g.
-            // foo.exe, foo.jpg.exe) are still rejected by the check below.
+            // rejected by default; sites that serve images this way can opt in
+            // via the filter below. Paths with a non-image extension (e.g.
+            // foo.exe, foo.jpg.exe) are always rejected by the check below.
             /**
              * Allow extensionless URLs to be treated as direct images.
              *
