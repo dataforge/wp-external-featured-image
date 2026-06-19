@@ -53,24 +53,3 @@ When enabled, the plugin also injects Open Graph and Twitter Card tags for exter
 ## Development
 
 All plugin source lives in this repository. The editor UI is written in vanilla JavaScript and does not require a build step.
-
-## Updates
-
-The plugin self-updates from GitHub Releases using the `Update URI` header and WordPress's `update_plugins_github.com` filter — no third-party libraries (see `includes/class-xefi-updater.php`). WordPress checks for updates automatically; you can also force a check with the **Check for Updates** button on the settings page or the matching link on the Plugins screen.
-
-## Releasing
-
-Releases are automated via GitHub Actions (publish-on-tag). To cut a new version:
-
-1. Bump the `Version:` header in `wp-external-featured-image.php`. This is the **single source of truth** — both the plugin and the updater read the version from it, so the tag below must match.
-2. Commit and push to `main`. (Pushing commits does **not** create a release.)
-3. Tag and push the tag:
-
-   ```bash
-   git tag -a vX.Y.Z -m "Release vX.Y.Z"
-   git push origin vX.Y.Z
-   ```
-
-Pushing the `vX.Y.Z` tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which lints the PHP, builds `wp-external-featured-image.zip` with [`build_plugin.py`](build_plugin.py), and publishes a GitHub Release with the zip attached. The workflow **fails the release if the tag does not match the `Version:` header**, preventing the "update available" loop that a missing header bump would otherwise cause.
-
-> The release zip must contain a single top-level folder named `wp-external-featured-image/` with forward-slash paths. `build_plugin.py` guarantees this — never build the zip with PowerShell's `Compress-Archive`, which writes backslash paths that break extraction on Linux servers.
