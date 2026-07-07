@@ -3,7 +3,7 @@
  * Plugin Name: WP External Featured Image
  * Plugin URI: https://github.com/dataforge/wp-external-featured-image
  * Description: Use external or Flickr-hosted images as featured images, complete with social meta tags.
- * Version: 1.1.7
+ * Version: 1.1.8
  * Author: Dataforge
  * Requires at least: 6.2
  * Requires PHP: 8.0
