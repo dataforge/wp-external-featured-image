@@ -214,7 +214,7 @@ class Updater {
 			return false;
 		}
 
-		$slim              = new stdClass();
+		$slim              = new \stdClass();
 		$slim->tag_name    = $release->tag_name;
 		$slim->html_url    = $release->html_url ?? '';
 		$slim->body        = $release->body ?? '';
@@ -222,7 +222,7 @@ class Updater {
 		$slim->assets      = array();
 		if ( ! empty( $release->assets ) && is_array( $release->assets ) ) {
 			foreach ( $release->assets as $asset ) {
-				$a                       = new stdClass();
+				$a                       = new \stdClass();
 				$a->name                 = $asset->name ?? '';
 				$a->browser_download_url = $asset->browser_download_url ?? '';
 				$slim->assets[]          = $a;
